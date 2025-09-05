@@ -36,30 +36,34 @@ Install required R packages via [Bioconductor](https://bioconductor.org/) and de
 9. Multi-omics Visualization  
    - Compare RNA and ADT features across clusters.
 
-# Integration with Bone Marrow Map
-
-The workflow leverages the `BoneMarrowMap` and `Symphony` for mapping your dataset onto a curated reference, facilitating cell type annotation and trajectory analysis.
-
-# Results & Visualization
-
-# Example Preprocessing Plot
 
 
 
-# Multi-omics Profile
+
+# Preprocessing Plot
+<img width="1902" height="870" alt="image" src="https://github.com/user-attachments/assets/540278d2-b749-4608-9996-541b8e481b4b" />
 
 
 # Symphony Integration
+<img width="1789" height="901" alt="image" src="https://github.com/user-attachments/assets/3c1b6f74-4eaf-48f5-9da6-159c9f2a1b93" />
+
+
+# Multi-omics Profile
+<img width="1902" height="865" alt="image" src="https://github.com/user-attachments/assets/d61e2062-233a-4d01-8afc-c8b5b033883f" />
+
+
+
 
 
 
 
 
 ## References
-
-- [Seurat Documentation](https://satijalab.org/seurat/)
-- [BoneMarrowMap Package](https://github.com/dosorio/boneMarrowMap)
-- [Symphony Reference Mapping](https://cran.r-project.org/web/packages/symphony/index.html)
+- Seurat Package(https://satijalab.org/seurat/)
+- Symphony Reference Mapping(https://cran.r-project.org/web/packages/symphony/index.html)
+- Zeng AGX, Iacobucci I, Shah S, Mitchell A, Wong G, Bansal S, Chen D, Gao Q, Kim H, Kennedy JA, Arruda A, Minden MD, Haferlach T, Mullighan CG, Dick JE. 
+Single-cell transcriptional mapping reveals genetic and non-genetic determinants of aberrant differentiation in AML. 
+*Nature Genetics*. 2022. https://doi.org/10.1038/s41588-022-01043-0
 
 ---
 
