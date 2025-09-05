@@ -1,0 +1,267 @@
+---
+title: "CITE Seq Trial Run"
+author: "Elwin Paulose"
+date: "2024-08-23"
+output:
+html_document: 
+---
+
+```{r}
+
+```
+
+---
+html_document
+---
+
+## Introduction
+
+This R Markdown document presents an analysis of single-cell RNA and ADT data using the Seurat and SingleCellExperiment packages.
+
+## Load Libraries
+
+```{r load-libraries}
+library(Seurat)
+library(SingleCellExperiment)
+library(BiocManager)
+library(lpsymphony)
+library(BoneMarrowMap)
+library(AUCell)
+library(tidyverse)
+library(patchwork)
+library(ggpubr)
+library(monocle3)
+library(fgsea)
+library(slingshot)
+library(SeuratWrappers)
+library(limma)
+library(GSEABase)
+library(clusterProfiler)
+library(org.Hs.eg.db)
+library(enrichplot)
+library(GSVA)
+library(remotes)
+library(uwot)
+
+##Load RNA data
+RNA_data <- readRDS("C:/Users/Elwin Paulose/Documents/BD Rhapsody/Trial 1/Lane1rerun_Seurat.rds")
+smk <- read.table("C:/Users/Elwin Paulose/Documents/BD Rhapsody/Trial 1/Lane1rerun_Sample_Tag_Calls.csv", sep = ",", header = TRUE, row.names = 1)
+RNA_data <- AddMetaData(RNA_data, metadata = smk)
+
+##Pre-processing the data
+mito_genes <- grep(pattern = "^MT-", x = rownames(RNA_data), value = TRUE)
+RNA_data[["percent.mt"]] <- PercentageFeatureSet(RNA_data, pattern = "^MT-")
+VlnPlot(RNA_data, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"))
+lb <- quantile(RNA_data[["nFeature_RNA"]]$nFeature_RNA, probs = 0.01)
+ub <- quantile(RNA_data[["nFeature_RNA"]]$nFeature_RNA, probs = 0.99)
+RNA_data <- RNA_data[, RNA_data[["nFeature_RNA"]] > lb & RNA_data[["nFeature_RNA"]] < ub  ] 
+RNA_data <- subset(RNA_data, subset =  nFeature_RNA < 2700  )
+RNA_data <- subset(RNA_data, subset = nFeature_RNA > 150 & nFeature_RNA < 2700 & percent.mt < 40)
+RNA_data <- subset(RNA_data, Sample_Name !="Undetermined" & Sample_Name!="Multiplet")
+
+##Subgrouping of ST and ADT in RNA data
+RNA_data <- subset(RNA_data, Sample_Tag %in% c("SampleTag01_hs"  ,   "SampleTag02_hs"    ,  "SampleTag03_hs"))
+table(RNA_data$Sample_Tag)
+RNA_data$patient <- dplyr::recode(RNA_data$Sample_Name, "SampleTag01_hs"="ST1","SampleTag02_hs"="ST2","SampleTag03_hs"="ST3")
+RNA_data <- NormalizeData(RNA_data, assay = "ADT", normalization.method = "CLR")
+allcombine <- RNA_data
+DefaultAssay(allcombine) <- "RNA"
+
+##Normalizing of DefaultAssay(allcombine)
+allcombine <-  NormalizeData(allcombine)
+allcombine<- FindVariableFeatures(allcombine, selection.method = "vst", nfeatures = 3000)
+top10variable <- head(VariableFeatures(allcombine), 10)
+variableFeaturePlot <- VariableFeaturePlot(allcombine)
+LabelPoints(plot = variableFeaturePlot, points = top10variable, repel = TRUE, xnudge = 0, ynudge = 0)
+all.genes <- rownames(allcombine)
+allcombine<- ScaleData(allcombine, features = all.genes, model.use = "linear")
+dim(allcombine)
+
+##Dimensionality Reduction & Annotation
+allcombine <- RunPCA(allcombine, features = VariableFeatures(object = allcombine), npcs = 50, verbose = FALSE)
+print(allcombine[["pca"]], dims = 1:75, nfeatures = 75)
+VizDimLoadings(allcombine, dims = 1:10, reduction = "pca")
+DimPlot(allcombine, reduction = "pca", group.by = "Sample_Name")
+allcombine <- RunPCA(allcombine, features = VariableFeatures(object = allcombine), npcs = 75)
+allcombine <- RunUMAP(allcombine, dims = 1:75)
+DimPlot(allcombine, reduction = "umap", group.by = "Cell_Type_Experimental", label = TRUE, label.size = 4, repel = TRUE)
+DimPlot(allcombine, reduction = "umap", group.by = "patient", label = TRUE, label.size = 4, repel = TRUE)
+
+##Generation of MetaData
+metadata <- allcombine@meta.data
+view(metadata)
+
+##Bone Marrow Map Construction
+projection_path <- './'
+curl::curl_download('https://bonemarrowmap.s3.us-east-2.amazonaws.com/BoneMarrow_RefMap_SymphonyRef.rds', destfile = paste0(projection_path, 'BoneMarrow_RefMap_SymphonyRef.rds'))
+curl::curl_download('https://bonemarrowmap.s3.us-east-2.amazonaws.com/BoneMarrow_RefMap_uwot_model.uwot', destfile = paste0(projection_path, 'BoneMarrow_RefMap_uwot_model.uwot'))
+ref <- readRDS(paste0(projection_path, 'BoneMarrow_RefMap_SymphonyRef.rds'))
+ref$save_uwot_path <- paste0(projection_path, 'BoneMarrow_RefMap_uwot_model.uwot')
+ReferenceSeuratObj <- create_ReferenceObject(ref)                      
+DimPlot(ReferenceSeuratObj, reduction = 'umap', group.by = 'CellType_Annotation_formatted', raster = FALSE, label = TRUE, label.size = 4)
+p1 <- DimPlot(ReferenceSeuratObj, reduction = 'umap', group.by = 'CyclePhase', raster = FALSE)
+p2 <- FeaturePlot(ReferenceSeuratObj, reduction = 'umap', features = 'Pseudotime', raster = FALSE)
+p1 + p2
+batchvar <- 'patient'
+exp_query <- map_Query(
+  exp_query = GetAssayData(allcombine, assay = "RNA", layer = "counts"),
+  ref = ref,
+  metadata = allcombine@meta.data
+)
+exp_query <- calculate_MappingError(exp_query, reference = ref, MAD_threshold = 2.5)
+QC_plots <- plot_MappingErrorQC(exp_query)
+wrap_plots(QC_plots, ncol = 4, widths = c(0.8, 0.3, 0.8, 0.3))
+query <- predict_CellTypes(
+  query_obj = exp_query,
+  ref_obj = ref,
+  ref_label = "CellType_Annotation_formatted",   
+  final_label = "predicted_CellType"
+)
+DimPlot(subset(query, mapping_error_QC == 'Pass'), reduction = 'umap_projected', group.by = 'predicted_CellType', raster = FALSE, label = TRUE, label.size = 4)
+
+##Trajectory Analysis
+cds <- as.cell_data_set(query)
+cds <- preprocess_cds(cds, num_dim = 50)
+cds <- reduce_dimension(cds)
+cds <- cluster_cells(cds)
+cds <- learn_graph(cds)
+cds <- order_cells(cds)
+colnames(colData(cds))
+plot_cells(cds, color_cells_by = "pseudotime", show_trajectory_graph = TRUE)
+
+##GSEA(Gene Set Enrichment Analysis)
+avg_exp <- AverageExpression(allcombine, return.seurat = FALSE)
+gene_means <- rowMeans(avg_exp$RNA)
+gene_vector <- sort(gene_means, decreasing = TRUE)
+gene_vector <- sort(gene_vector, decreasing = TRUE)
+head(gene_vector)
+gene_list <- sort(gene_vector, decreasing = TRUE)
+gsea_results <- gseGO(geneList = gene_list,ont = "BP", OrgDb = org.Hs.eg.db, keyType = "SYMBOL", minGSSize = 10, maxGSSize = 500, pvalueCutoff = 0.8, verbose = TRUE)
+ridgeplot(gsea_results)
+dotplot(gsea_results, showCategory = 10)
+
+##Pre-Processing of ADT data
+DefaultAssay(allcombine) <- "ADT"
+counts <- allcombine[["ADT"]]@counts
+rownames(counts) <- str_replace_all(rownames(counts), "\\|pAbO", "")
+allcombine[["ADT"]]@counts <- counts
+allcombine <- NormalizeData(allcombine, normalization.method = "CLR", margin = 2, assay = "ADT")
+allcombine <- ScaleData(allcombine, assay.type = "ADT", display.progress = TRUE)
+adt_features <- rownames(allcombine[["ADT"]])
+print(adt_features)
+adt_features <- c(
+  "CD10-MME-AHS0051-pAbO", "CD117:104D2-KIT-AHS0165-pAbO", "CD11b:ICRF44-ITGAM-AHS0184-pAbO", 
+  "CD123-IL3RA-AHS0020-pAbO", "CD13-ANPEP-AHS0050-pAbO", "CD14:MPHIP9-CD14-AHS0037-pAbO", 
+  "CD15-FUT4-AHS0196-pAbO", "CD19:SJ25C1-CD19-AHS0030-pAbO", "CD1a-CD1A-AHS0067-pAbO", 
+  "CD20:2H7-MS4A1-AHS0008-pAbO", "CD25:2A3-IL2RA-AHS0026-pAbO", "CD279:EH12-1-PDCD1-AHS0014-pAbO", 
+  "CD33:WM53-CD33-AHS0044-pAbO", "CD34:581-CD34-AHS0061-pAbO", "CD36-CD36-AHS0135-pAbO", 
+  "CD38:HB7-CD38-AHS0189-pAbO", "CD3:UCHT1-CD3E-AHS0231-pAbO", "CD45RA:HI100-PTPRC-AHS0009-pAbO", 
+  "CD4:SK3-CD4-AHS0032-pAbO", "CD56:NCAM16.2-NCAM1-AHS0019-pAbO", "CD5:UCHT2-CD5-AHS0047-pAbO", 
+  "CD61-ITGB3-AHS0069-pAbO", "CD64:10.1-FCGR1A-AHS0055-pAbO", "CD71-TFRC-AHS0197-pAbO", 
+  "CD79b:3A2-2E7-CD79B-AHS0259-pAbO", "CD79b:CB3-1-CD79B-AHS0153-pAbO", "CD7-CD7-AHS0043-pAbO", 
+  "CD8:RPA-T8-CD8A-AHS0027-pAbO", "CD90-THY1-AHS0045-pAbO", "TCR-gamma-delta:B1-TRD-TRG-AHS0015-pAbO"
+)
+adt_data <- FetchData(allcombine, vars = adt_features, layer = "data")
+allcombine <- AddMetaData(object = allcombine, metadata = adt_data)
+metadata <- allcombine@meta.data
+head(metadata)
+Assays(allcombine)
+adt_assay <- GetAssayData(allcombine, assay = "ADT", slot = "data")
+head(adt_assay)
+VlnPlot(allcombine, features = c("CD10-MME-AHS0051-pAbO", "CD117:104D2-KIT-AHS0165-pAbO", 
+    "CD11b:ICRF44-ITGAM-AHS0184-pAbO", "CD123-IL3RA-AHS0020-pAbO", 
+    "CD13-ANPEP-AHS0050-pAbO", "CD14:MPHIP9-CD14-AHS0037-pAbO", 
+    "CD15-FUT4-AHS0196-pAbO", "CD19:SJ25C1-CD19-AHS0030-pAbO", 
+    "CD1a-CD1A-AHS0067-pAbO", "CD20:2H7-MS4A1-AHS0008-pAbO", 
+    "CD25:2A3-IL2RA-AHS0026-pAbO", "CD279:EH12-1-PDCD1-AHS0014-pAbO"), assay = "ADT", same.y.lims = TRUE)
+VlnPlot(allcombine, features = c("CD33:WM53-CD33-AHS0044-pAbO", "CD34:581-CD34-AHS0061-pAbO", "CD36-CD36-AHS0135-pAbO", 
+  "CD38:HB7-CD38-AHS0189-pAbO", "CD3:UCHT1-CD3E-AHS0231-pAbO", "CD45RA:HI100-PTPRC-AHS0009-pAbO", 
+  "CD4:SK3-CD4-AHS0032-pAbO", "CD56:NCAM16.2-NCAM1-AHS0019-pAbO", "CD5:UCHT2-CD5-AHS0047-pAbO"), assay = "ADT", same.y.lims = TRUE)
+VlnPlot(allcombine, features = c( "CD61-ITGB3-AHS0069-pAbO", "CD64:10.1-FCGR1A-AHS0055-pAbO", "CD71-TFRC-AHS0197-pAbO", 
+                                  "CD79b:3A2-2E7-CD79B-AHS0259-pAbO", "CD79b:CB3-1-CD79B-AHS0153-pAbO", "CD7-CD7-AHS0043-pAbO", 
+                                  "CD8:RPA-T8-CD8A-AHS0027-pAbO", "CD90-THY1-AHS0045-pAbO", "TCR-gamma-delta:B1-TRD-TRG-AHS0015-pAbO"), assay = "ADT", same.y.lims = TRUE)
+DefaultAssay(allcombine) <- "ADT"
+
+##Normalizing ADT data
+allcombine <- NormalizeData(allcombine, assay = "ADT", normalization.method = "CLR")
+allcombine <- ScaleData(allcombine, assay = "ADT")
+allcombine <- FindVariableFeatures(allcombine, selection.method = "vst", nfeatures = 10)
+allcombine <- RunPCA(allcombine, assay = "ADT")
+allcombine <- FindNeighbors(allcombine, dims = 1:9, assay = "ADT")
+allcombine <- FindClusters(allcombine, resolution = 0.5)
+
+##Dimensionality Reduction
+FeaturePlot(allcombine, features = c("adt_CD10-MME-AHS0051-pAbO", "adt_CD117:104D2-KIT-AHS0165-pAbO", 
+               "adt_CD11b:ICRF44-ITGAM-AHS0184-pAbO", "adt_CD123-IL3RA-AHS0020-pAbO", 
+               "adt_CD13-ANPEP-AHS0050-pAbO", "adt_CD14:MPHIP9-CD14-AHS0037-pAbO", 
+               "adt_CD15-FUT4-AHS0196-pAbO", "adt_CD19:SJ25C1-CD19-AHS0030-pAbO", 
+               "adt_CD1a-CD1A-AHS0067-pAbO", "adt_CD20:2H7-MS4A1-AHS0008-pAbO", 
+               "adt_CD25:2A3-IL2RA-AHS0026-pAbO", "adt_CD279:EH12-1-PDCD1-AHS0014-pAbO", 
+               "adt_CD33:WM53-CD33-AHS0044-pAbO", "adt_CD34:581-CD34-AHS0061-pAbO", 
+               "adt_CD36-CD36-AHS0135-pAbO", "adt_CD38:HB7-CD38-AHS0189-pAbO", 
+               "adt_CD3:UCHT1-CD3E-AHS0231-pAbO", "adt_CD45RA:HI100-PTPRC-AHS0009-pAbO", 
+               "adt_CD4:SK3-CD4-AHS0032-pAbO", "adt_CD56:NCAM16.2-NCAM1-AHS0019-pAbO", 
+               "adt_CD5:UCHT2-CD5-AHS0047-pAbO", "adt_CD61-ITGB3-AHS0069-pAbO", 
+               "adt_CD64:10.1-FCGR1A-AHS0055-pAbO", "adt_CD71-TFRC-AHS0197-pAbO", 
+               "adt_CD79b:3A2-2E7-CD79B-AHS0259-pAbO", "adt_CD79b:CB3-1-CD79B-AHS0153-pAbO", 
+               "adt_CD7-CD7-AHS0043-pAbO", "adt_CD8:RPA-T8-CD8A-AHS0027-pAbO", 
+               "adt_CD90-THY1-AHS0045-pAbO", "adt_TCR-gamma-delta:B1-TRD-TRG-AHS0015-pAbO"),
+  reduction = "pca", cols = c("lightgrey", "blue"), ncol = 6)
+DimPlot(allcombine, reduction = "pca", group.by = "adt_CD10-MME-AHS0051-pAbO")
+allcombine <- RunPCA(allcombine, features = VariableFeatures(object = allcombine))
+allcombine <- RunUMAP(allcombine, reduction = "pca", dims = 1:9)
+DimPlot(allcombine, reduction = "umap", group.by = "adt_CD10-MME-AHS0051-pAbO")
+DefaultAssay(allcombine) <- "ADT"
+allcombine <- NormalizeData(allcombine, assay = "ADT", normalization.method = "CLR")
+allcombine <- ScaleData(allcombine, assay = "ADT")
+allcombine <- FindVariableFeatures(allcombine, selection.method = "vst", nfeatures = 10)
+allcombine <- RunPCA(allcombine, assay = "ADT")
+allcombine <- FindNeighbors(allcombine, dims = 1:9, assay = "ADT")
+allcombine <- FindClusters(allcombine, resolution = 0.5)
+DimPlot(allcombine, reduction = "pca", group.by = "ADT_snn_res.0.5")
+allcombine <- RunPCA(allcombine)
+DimPlot(allcombine, reduction = "pca", group.by = "Cell_Type_Experimental")
+DimPlot(allcombine, reduction = "tsne", group.by = "Cell_Type_Experimental")
+
+##Expression analysis of CD38 & CD117
+FeaturePlot(allcombine, features = "adt_CD38:HB7-CD38-AHS0189-pAbO", 
+            reduction = "tsne", 
+            cols = c("yellow", "red"))
+FeaturePlot(allcombine, features = "adt_CD117:104D2-KIT-AHS0165-pAbO", 
+            reduction = "tsne", 
+            cols = c("yellow", "red"))
+
+##Multi-omics
+DimPlot(allcombine, reduction = "umap", group.by = "seurat_clusters", label = TRUE, repel = TRUE) 
+ggtitle("RNA Clusters")
+DimPlot(allcombine, reduction = "umap", group.by = "ADT_snn_res.0.5", label = TRUE, repel = TRUE) + 
+  ggtitle("ADT Clusters")
+FeaturePlot(allcombine, features = c("CD3E"), reduction = "tsne", cols = c("lightgrey", "blue"))
+ggtitle("RNA Expression of CD3E")
+adt_features <- rownames(GetAssayData(allcombine, assay = "ADT"))
+FeaturePlot(allcombine, features = c("adt_CD3:UCHT1-CD3E-AHS0231-pAbO"), reduction = "tsne", cols = c("lightgrey", "red")) + 
+ggtitle("ADT Expression of adt_CD3")
+p1 <- FeaturePlot(allcombine, features = c("CD3E"), reduction = "tsne", cols = c("lightgrey", "blue"))
+p2 <- FeaturePlot(allcombine, features = c("adt_CD3:UCHT1-CD3E-AHS0231-pAbO"), reduction = "tsne", cols = c("lightgrey", "red"))
+CombinePlots(plots = list(p1, p2))
+
+```
+
+## R Markdown
+
+This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+
+When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+
+```{r CITE Seq Trial-1 Run, echo=FALSE}
+```
+
+## Including Plots
+
+You can also embed plots, for example:
+
+```{r CITE Seq Trial-1 Run, echo=FALSE}
+
+```
+
+Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
